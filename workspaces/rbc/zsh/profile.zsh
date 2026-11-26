@@ -181,3 +181,21 @@ EOF
 
     printf '%s\n' "$colorized"
 }
+
+clean-har() {
+  if [[ -z "$1" ]]; then
+    echo "Usage: clean-har <input.har> [output.json]" >&2
+    return 1
+  fi
+  local out="${2:-${1%.har}.clean.json}"
+  jq '[.log.entries[]
+    | select((.request.url | split("?")[0]) != "https://api-dev.dodgeoptify.com/portal/plants/users/roles")
+    | {
+        method: .request.method,
+        url: .request.url,
+        headers: (.request.headers | map(select(.name | ascii_downcase != "authorization"))),
+        payload: .request.postData.text,
+        status: .response.status,
+        response: .response.content.text
+      }]' "$1" > "$out" && echo "Wrote $out"
+}
