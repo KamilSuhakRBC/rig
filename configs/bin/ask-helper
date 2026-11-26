@@ -696,15 +696,30 @@ def cmd_run(args: argparse.Namespace) -> int:
             return 1
         model = "gemini-4-hydrogen-high" if args.high else "gemini-4-hydrogen-low"
         if args.engine == "copilot":
-            code, _ = stream_ask_process(exe, ["-s", "-p", "/vault-cleanup"], "copilot", stream_json=False, cwd=str(notes_dir))
-            return code
-        code, _ = stream_ask_process(
-            exe,
-            ["--model", model, "--output-format", "stream-json", "-p", "/vault-cleanup"],
-            f"{model} · vault-cleanup",
-            stream_json=True,
-            cwd=str(notes_dir),
-        )
+            code, conv_id = stream_ask_process(
+                exe,
+                ["--yolo", "-s", "-p", "/vault-cleanup"],
+                "copilot · vault-cleanup",
+                stream_json=False,
+                cwd=str(notes_dir),
+            )
+        else:
+            code, conv_id = stream_ask_process(
+                exe,
+                ["--dangerously-skip-permissions", "--model", model, "--output-format", "stream-json", "-p", "/vault-cleanup"],
+                f"{model} · vault-cleanup",
+                stream_json=True,
+                cwd=str(notes_dir),
+            )
+        if code == 0 and (conv_id or args.engine == "copilot"):
+            try:
+                ask_home.mkdir(parents=True, exist_ok=True)
+                (ask_home / "last.json").write_text(
+                    json.dumps({"id": conv_id or "", "cwd": str(notes_dir), "real_home": True}, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+            except OSError:
+                pass
         return code
 
     def _isolated_env() -> dict[str, str]:
@@ -726,17 +741,19 @@ def cmd_run(args: argparse.Namespace) -> int:
         except (OSError, ValueError):
             last_meta = {}
         last_id = str(last_meta.get("id") or "").strip()
+        use_real_home = bool(last_meta.get("real_home"))
         if not last_id and args.engine == "agy":
             print(_ce(sys.stderr, "✖ ask: last conversation ID is missing.", "red"), file=sys.stderr)
             return 1
         saved_cwd = str(last_meta.get("cwd") or ask_home)
         target_cwd = saved_cwd if Path(saved_cwd).is_dir() else str(ask_home)
         if args.engine == "copilot":
-            cont_cmd = [exe, "--config-dir", str(ask_home / ".copilot")]
+            cont_cmd = [exe]
             cont_cmd.extend(["--resume", last_id] if last_id else ["--continue"])
         else:
             cont_cmd = [exe, "--conversation", last_id]
-        return subprocess.run(cont_cmd, cwd=target_cwd, env=_isolated_env(), check=False).returncode
+        run_env = None if use_real_home else _isolated_env()
+        return subprocess.run(cont_cmd, cwd=target_cwd, env=run_env, check=False).returncode
 
     piped = sys.stdin.read() if not sys.stdin.isatty() else ""
     if args.preamble is not None:
@@ -802,7 +819,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     last_file = ask_home / "last.json"
 
     if args.engine == "copilot":
-        cli_args = ["--config-dir", str(ask_home / ".copilot"), "-s", "-p", full_prompt]
+        cli_args = ["-s", "-p", full_prompt]
         stream_json = False
         label = "copilot"
     else:
@@ -812,6 +829,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         stream_json = True
         label = "resume" if args.reply else model
 
+    run_env: dict[str, str] | None = _isolated_env()
     if args.reply:
         if not last_file.is_file():
             print(_ce(sys.stderr, "✖ ask: no previous 'ask' conversation found to resume.", "red"), file=sys.stderr)
@@ -821,11 +839,14 @@ def cmd_run(args: argparse.Namespace) -> int:
         except (OSError, ValueError):
             last_meta = {}
         last_id = str(last_meta.get("id") or "").strip()
+        use_real_home = bool(last_meta.get("real_home"))
         if not last_id and args.engine == "agy":
             print(_ce(sys.stderr, "✖ ask: last conversation ID is missing.", "red"), file=sys.stderr)
             return 1
         saved_cwd = str(last_meta.get("cwd") or ask_home)
         target_cwd = saved_cwd if Path(saved_cwd).is_dir() else str(ask_home)
+        if use_real_home:
+            run_env = None
         if args.engine == "copilot":
             cli_args = ["--resume", last_id, *cli_args] if last_id else ["--continue", *cli_args]
         else:
@@ -839,7 +860,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         label,
         stream_json=stream_json,
         cwd=target_cwd,
-        env=_isolated_env(),
+        env=run_env,
     )
 
     if code == 0 and (conv_id or args.engine == "copilot"):
